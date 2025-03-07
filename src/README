@@ -1,0 +1,98 @@
+APD Tema 2
+
+    Initialization:
+        The tracker receives the `peer_data` struct from each peer. This is done
+    in a single send/recv by creating and `MPI_Datatype` of the struct.
+        The client struct is the following:
+        ```
+            struct Peer_data {
+                peer_filecount = number of files owned by peer
+                peer_filenames = names of files owned by peer
+                peer_chunk_count = chunk count of owned files
+                peer_files = actual content of owned files
+
+                desired_filecount = number of files the peer wants to download
+                desired_filenames = names of files that the peer wants
+            }
+        ```
+        The tracker keeps two mappings generated from the init data:
+        ```
+            map<filename, set<peers>> = the swarms for each file
+            map<filename, pair<segment count, vector<hashes>>> = 
+                the segment count and the hashes for each file
+        ```
+
+        After the tracker has received all init data it sends a START_TAG
+    message to all peers to start their download and upload threads.
+
+    Tracker:
+        The tracker handles the following messages:
+            SWARM_REQUEST_TAG - A client wants the swarm for a file
+
+                Tracker receives: filename length and filename
+                Tracker sends: file segment count, number of peers in swarm
+                    and the swarm itself(int[] of task ids)
+
+                The tracker also marks the requester as a peer for the given 
+                    file.
+
+            TRACKER_FILE_TAG - A client has finished downloading a file and
+                requests the hashes from the tracker
+
+                Tracker receives: filename length and filename
+                Tracker sends: hashes for each segment one at a time,
+                    SSend() is used to make sure the peer buffers don't fill
+
+            END_TAG - A client download thread has finished
+                
+                Tracker receives: empty END_TAG message
+
+                The `peer_finished_counter` is incremented. Once it is equal to
+                    `numtasks - 1` all download threads must have finished, so
+                    the tracker sends an END_TAG message to all clients to close
+
+    Client download thread:
+        For each file that it wants to download, the client keeps a 
+            multimap<load, peers> that automatically sorts the peers by their 
+            load. The load of each peer is simply the amount of segments that 
+            the client has downloaded from them, thus trying to download the
+            file from as many different peers as possible.
+
+        Every 10 downloaded segments the client requests the swarm from the
+            tracker and resets the map with the updated weights of each peer
+            in the swarm.
+
+        The segments are downloaded in order and the client increments
+            `chunk_count[file]` for each segment downloaded. This means that
+            the client "owns" segment X if `chunk_count[file] > X`.
+
+        The access to `chunk_count` is protected by a mutex because the upload
+            thread also checks it to see if it owns a segment.
+
+    Client upload thread:
+        The upload thread handles the following messages:
+            PEER_SEGMENT_REQUEST - A peer desires a segment of file the client 
+                owns
+
+                Client receives: filename length, filename and segment id
+                Client sends: ACK or NACK messages depending on whether or not
+                    the client owns the segment
+
+                ACK is sent only if `chunk_count[file] > segment id`. This is
+                    always the case for seeds of the file, however the peer
+                    does not differentiate between peers and seeds. If the 
+                    client is not a seed and has not yet downloaded the segment
+                    it sends a NACK message.
+
+            END_TAG - tracker tells client to stop
+
+                Client receives: empty END_TAG message
+
+                This is only sent out by the tracker after all download threads
+                    have finished, so the upload threads should also stop.
+
+                
+
+
+
+
